@@ -1,11 +1,12 @@
 
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, ShieldCheck, ShieldX, UploadCloud, DownloadCloud } from 'lucide-react';
+import { firebaseConfig } from '@/firebase/config';
 
 // Tipos para os dados recebidos do site pai
 interface EcoFeiraUser {
@@ -38,7 +39,10 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
   const { toast } = useToast();
 
+  const tokenClient = useRef<any>(null);
+
   const PARENT_ORIGIN = 'https://copyecofeira.vercel.app';
+  const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -66,24 +70,58 @@ export default function Home() {
     // Envia uma mensagem para o pai avisando que o iframe está pronto
     window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, PARENT_ORIGIN);
 
+    // Carrega o GSI (Google Sign-In)
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      tokenClient.current = (window as any).google.accounts.oauth2.initTokenClient({
+        client_id: firebaseConfig.appId, // Reutilizando o appId que na verdade é o client_id
+        scope: DRIVE_SCOPE,
+        callback: (tokenResponse: any) => {
+          if (tokenResponse && tokenResponse.access_token) {
+            (window as any).gapi.client.setToken(tokenResponse);
+             setIsDriveConnected(true);
+             setIsProcessing(false);
+             toast({
+               title: 'Google Drive Conectado!',
+               description: 'Agora você pode fazer backup e restaurar seus dados.',
+             });
+          }
+        },
+        error_callback: (error: any) => {
+            console.error('Erro de autenticação:', error);
+            setIsProcessing(false);
+            toast({
+                title: 'Erro de conexão',
+                description: 'Não foi possível conectar ao Google Drive.',
+                variant: 'destructive',
+            });
+        }
+      });
+    };
+    document.body.appendChild(script);
+
 
     return () => {
       window.removeEventListener('message', handleMessage);
+      document.body.removeChild(script);
     };
   }, [toast]);
 
   const handleDriveConnect = () => {
-    // Aqui viria a lógica de autenticação OAuth2 com a API do Google Drive
-    // Por enquanto, vamos apenas simular a conexão.
     setIsProcessing(true);
-    setTimeout(() => {
-      setIsDriveConnected(true);
-      setIsProcessing(false);
-      toast({
-        title: 'Google Drive Conectado!',
-        description: 'Agora você pode fazer backup e restaurar seus dados.',
-      });
-    }, 1500);
+    if (tokenClient.current) {
+        tokenClient.current.requestAccessToken();
+    } else {
+        setIsProcessing(false);
+        toast({
+            title: 'Erro',
+            description: 'A biblioteca de autenticação do Google não carregou.',
+            variant: 'destructive',
+        });
+    }
   };
 
   const handleBackup = async () => {

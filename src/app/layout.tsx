@@ -1,6 +1,7 @@
 import type {Metadata} from 'next';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster";
+import Script from 'next/script';
 
 export const metadata: Metadata = {
   title: 'DriveVault',
@@ -22,6 +23,8 @@ export default function RootLayout({
       <body className="font-body antialiased bg-background">
           {children}
         <Toaster />
+        <Script src="https://apis.google.com/js/api.js" async defer />
+        <Script src="https://accounts.google.com/gsi/client" async defer />
       </body>
     </html>
   );
