@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, ShieldCheck, ShieldX, UploadCloud, DownloadCloud } from 'lucide-react';
-import { firebaseConfig } from '@/firebase/config';
 
 // Tipos para os dados recebidos do site pai
 interface EcoFeiraUser {
@@ -38,59 +37,32 @@ export default function Home() {
   const [isDriveConnected, setIsDriveConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const { toast } = useToast();
-
-  const tokenClient = useRef<any>(null);
   const gapiInited = useRef(false);
-  const gisInited = useRef(false);
+
 
   // Define a origem do site pai para validação de segurança
   const PARENT_ORIGIN = 'https://copyecofeira.vercel.app';
-  const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-
+  
   const gapiLoaded = () => {
     (window as any).gapi.load('client', initializeGapiClient);
   }
 
   const initializeGapiClient = async () => {
+    // ATENÇÃO: A API Key e o Discovery Docs são para o cliente GAPI, não para o OAuth.
+    const GAPI_API_KEY = process.env.NEXT_PUBLIC_GAPI_API_KEY; // Você precisará configurar isso
+    if (!GAPI_API_KEY) {
+        console.error("GAPI API Key não encontrada. Configure NEXT_PUBLIC_GAPI_API_KEY no seu ambiente.");
+        toast({ title: "Erro de Configuração", description: "A chave da API do Google não foi encontrada.", variant: "destructive" });
+        return;
+    }
+
     await (window as any).gapi.client.init({
-      apiKey: firebaseConfig.apiKey,
+      apiKey: GAPI_API_KEY,
       discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
     });
     gapiInited.current = true;
   }
 
-  const gisLoaded = () => {
-      // ATENÇÃO: Para produção, o OAUTH_CLIENT_ID deve ser configurado no Google Cloud Console
-      // e restrito aos domínios do seu site pai e filho.
-      const OAUTH_CLIENT_ID = '1006462699084-vbutb3s7u42n51nmit28hj335jbsmggc.apps.googleusercontent.com';
-
-      tokenClient.current = (window as any).google.accounts.oauth2.initTokenClient({
-        client_id: OAUTH_CLIENT_ID,
-        scope: DRIVE_SCOPE,
-        callback: (tokenResponse: any) => {
-          if (tokenResponse && tokenResponse.access_token) {
-            (window as any).gapi.client.setToken(tokenResponse);
-             setIsDriveConnected(true);
-             setIsProcessing(false);
-             toast({
-               title: 'Google Drive Conectado!',
-               description: 'Agora você pode fazer backup e restaurar seus dados.',
-               variant: 'success'
-             });
-          }
-        },
-        error_callback: (error: any) => {
-            console.error('Erro de autenticação:', error);
-            setIsProcessing(false);
-            toast({
-                title: 'Erro de conexão',
-                description: 'Não foi possível conectar ao Google Drive.',
-                variant: 'destructive',
-            });
-        }
-      });
-      gisInited.current = true;
-  }
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -98,7 +70,9 @@ export default function Home() {
         console.warn('Mensagem recebida de uma origem não confiável:', event.origin);
         return;
       }
-      const { type, user, data } = event.data;
+      
+      const { type, user, data, token } = event.data;
+
       if (type === 'ECOFEIRA_BACKUP_INIT') {
         setAppUser(user);
         setParentData(data);
@@ -106,6 +80,27 @@ export default function Home() {
             title: "Conectado ao EcoFeira!",
             description: `Bem-vindo, ${user.displayName}.`,
         });
+      }
+
+      if (type === 'DRIVE_TOKEN_RESPONSE' && token) {
+        (window as any).gapi.client.setToken({ access_token: token });
+         setIsDriveConnected(true);
+         setIsProcessing(false);
+         toast({
+           title: 'Google Drive Conectado!',
+           description: 'Agora você pode fazer backup e restaurar seus dados.',
+           variant: 'success'
+         });
+      }
+
+      if (type === 'DRIVE_TOKEN_ERROR') {
+          console.error('Erro de autenticação do Drive recebido do pai:', event.data.error);
+          setIsProcessing(false);
+          toast({
+              title: 'Erro de conexão',
+              description: 'Não foi possível conectar ao Google Drive através do EcoFeira.',
+              variant: 'destructive',
+          });
       }
     };
 
@@ -120,37 +115,20 @@ export default function Home() {
     scriptGapi.onload = gapiLoaded;
     document.body.appendChild(scriptGapi);
 
-    const scriptGis = document.createElement('script');
-    scriptGis.src = 'https://accounts.google.com/gsi/client';
-    scriptGis.async = true;
-    scriptGis.defer = true;
-    scriptGis.onload = gisLoaded;
-    document.body.appendChild(scriptGis);
-
     return () => {
       window.removeEventListener('message', handleMessage);
-      // Clean up scripts to avoid memory leaks
       try {
         document.body.removeChild(scriptGapi);
-        document.body.removeChild(scriptGis);
       } catch (e) {
-        // Scripts might have been removed already
+        // Script pode já ter sido removido
       }
     };
   }, []);
 
   const handleDriveConnect = () => {
     setIsProcessing(true);
-    if (tokenClient.current) {
-        tokenClient.current.requestAccessToken();
-    } else {
-        setIsProcessing(false);
-        toast({
-            title: 'Erro',
-            description: 'A biblioteca de autenticação do Google não carregou.',
-            variant: 'destructive',
-        });
-    }
+    // Pede ao site pai para iniciar o fluxo de conexão com o Drive
+    window.parent.postMessage({ type: 'DRIVE_CONNECT_REQUEST' }, PARENT_ORIGIN);
   };
 
   const handleBackup = async () => {
@@ -165,12 +143,14 @@ export default function Home() {
     const fileMetadata = {
         'name': fileName,
         'mimeType': 'application/json',
+        // Para garantir que o arquivo seja encontrado apenas por este app
+        'parents': ['appDataFolder'] 
     };
 
     try {
         const response = await (window as any).gapi.client.drive.files.list({
             q: `name='${fileName}' and trashed=false`,
-            spaces: 'drive',
+            spaces: 'appDataFolder',
             fields: 'files(id, name)',
         });
 
@@ -222,7 +202,7 @@ export default function Home() {
     try {
         const response = await (window as any).gapi.client.drive.files.list({
             q: `name='${fileName}' and trashed=false`,
-            spaces: 'drive',
+            spaces: 'appDataFolder',
             fields: 'files(id, name)',
         });
         const files = response.result.files;
@@ -265,7 +245,7 @@ export default function Home() {
                  <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card rounded-lg border border-border">
                     <ShieldX className="h-12 w-12 text-muted-foreground" />
                     <p className="text-muted-foreground">Conecte seu Google Drive para gerenciar seus backups.</p>
-                    <Button onClick={handleDriveConnect} disabled={!appUser || isProcessing || !gapiInited.current || !gisInited.current}>
+                    <Button onClick={handleDriveConnect} disabled={!appUser || isProcessing || !gapiInited.current}>
                         {isProcessing ? <Loader2 className="animate-spin" /> : 'Conectar ao Google Drive'}
                     </Button>
                 </div>
@@ -293,4 +273,3 @@ export default function Home() {
     </main>
   );
 }
- 
