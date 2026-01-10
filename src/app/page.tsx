@@ -37,32 +37,10 @@ export default function Home() {
   const [isDriveConnected, setIsDriveConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const { toast } = useToast();
-  const gapiInited = useRef(false);
-
+  const accessTokenRef = useRef<string | null>(null);
 
   // Define a origem do site pai para validação de segurança
   const PARENT_ORIGIN = 'https://copyecofeira.vercel.app';
-  
-  const gapiLoaded = () => {
-    (window as any).gapi.load('client', initializeGapiClient);
-  }
-
-  const initializeGapiClient = async () => {
-    // ATENÇÃO: A API Key e o Discovery Docs são para o cliente GAPI, não para o OAuth.
-    const GAPI_API_KEY = process.env.NEXT_PUBLIC_GAPI_API_KEY; // Você precisará configurar isso
-    if (!GAPI_API_KEY) {
-        console.error("GAPI API Key não encontrada. Configure NEXT_PUBLIC_GAPI_API_KEY no seu ambiente.");
-        toast({ title: "Erro de Configuração", description: "A chave da API do Google não foi encontrada.", variant: "destructive" });
-        return;
-    }
-
-    await (window as any).gapi.client.init({
-      apiKey: GAPI_API_KEY,
-      discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-    });
-    gapiInited.current = true;
-  }
-
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -83,7 +61,7 @@ export default function Home() {
       }
 
       if (type === 'DRIVE_TOKEN_RESPONSE' && token) {
-        (window as any).gapi.client.setToken({ access_token: token });
+         accessTokenRef.current = token;
          setIsDriveConnected(true);
          setIsProcessing(false);
          toast({
@@ -107,21 +85,9 @@ export default function Home() {
     window.addEventListener('message', handleMessage);
     // Informa ao pai que o iframe está pronto para receber dados
     window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, PARENT_ORIGIN);
-
-    const scriptGapi = document.createElement('script');
-    scriptGapi.src = 'https://apis.google.com/js/api.js';
-    scriptGapi.async = true;
-    scriptGapi.defer = true;
-    scriptGapi.onload = gapiLoaded;
-    document.body.appendChild(scriptGapi);
-
+    
     return () => {
       window.removeEventListener('message', handleMessage);
-      try {
-        document.body.removeChild(scriptGapi);
-      } catch (e) {
-        // Script pode já ter sido removido
-      }
     };
   }, []);
 
@@ -132,8 +98,8 @@ export default function Home() {
   };
 
   const handleBackup = async () => {
-    if (!parentData || !appUser) {
-        toast({ title: 'Erro', description: 'Dados do EcoFeira não encontrados.', variant: 'destructive'});
+    if (!parentData || !appUser || !accessTokenRef.current) {
+        toast({ title: 'Erro', description: 'Dados ou conexão com o Drive não encontrados.', variant: 'destructive'});
         return;
     }
     setIsProcessing(true);
@@ -143,56 +109,68 @@ export default function Home() {
     const fileMetadata = {
         'name': fileName,
         'mimeType': 'application/json',
-        // Para garantir que o arquivo seja encontrado apenas por este app
-        'parents': ['appDataFolder'] 
     };
 
     try {
-        const response = await (window as any).gapi.client.drive.files.list({
-            q: `name='${fileName}' and trashed=false`,
-            spaces: 'appDataFolder',
-            fields: 'files(id, name)',
+        // 1. Pesquisar pelo arquivo
+        const searchResponse = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and 'appDataFolder' in parents and trashed=false&spaces=appDataFolder&fields=files(id)`, {
+            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` }
         });
+        const searchResult = await searchResponse.json();
 
-        const files = response.result.files;
+        if (searchResult.error) throw searchResult.error;
+        
+        const files = searchResult.files;
         const blob = new Blob([fileContent], {type: 'application/json'});
-        const media = { body: blob };
+        let uploadUrl: string;
+        let method: 'POST' | 'PATCH';
 
         if (files && files.length > 0) {
-            // Update existing file
+            // Arquivo existe, vamos atualizar (PATCH)
             const fileId = files[0].id;
-            await (window as any).gapi.client.request({
-                path: `/upload/drive/v3/files/${fileId}`,
-                method: 'PATCH',
-                params: { uploadType: 'media' },
-                body: media.body,
-            });
-            toast({ title: 'Backup Atualizado!', description: 'Seus dados foram atualizados no Google Drive.', variant: 'success' });
+            uploadUrl = `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`;
+            method = 'PATCH';
         } else {
-            // Create new file
-            const formData = new FormData();
-            formData.append('metadata', new Blob([JSON.stringify(fileMetadata)], {type: 'application/json'}));
-            formData.append('file', blob);
-
-             await (window as any).gapi.client.request({
-                path: '/upload/drive/v3/files',
-                method: 'POST',
-                params: { uploadType: 'multipart' },
-                body: formData,
-            });
-            toast({ title: 'Backup Concluído!', description: 'Seus dados do EcoFeira foram salvos no Google Drive.', variant: 'success'});
+            // Arquivo não existe, vamos criar (POST)
+            uploadUrl = `https://www.googleapis.com/upload/drive/v3/files?uploadType=media`;
+            method = 'POST';
         }
+        
+        // Crie um novo FormData para o upload
+        const formData = new FormData();
+        if (method === 'POST') {
+             // Para criar, precisamos dos metadados e do arquivo
+             formData.append('metadata', new Blob([JSON.stringify({ ...fileMetadata, parents: ['appDataFolder'] })], { type: 'application/json' }));
+             formData.append('file', blob);
+             uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+        } else {
+            // Para atualizar, só o conteúdo do arquivo
+             uploadUrl = `https://www.googleapis.com/upload/drive/v3/files/${files[0].id}?uploadType=media`;
+             formData.append('file', blob); // Embora não seja um 'form', o corpo será o blob
+        }
+
+        const uploadResponse = await fetch(uploadUrl, {
+            method: method,
+            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` },
+            body: method === 'POST' ? formData : blob,
+        });
+
+        const uploadResult = await uploadResponse.json();
+        if (uploadResult.error) throw uploadResult.error;
+
+        toast({ title: `Backup ${method === 'POST' ? 'Concluído' : 'Atualizado'}!`, description: 'Seus dados foram salvos no Google Drive.', variant: 'success'});
+
     } catch(err: any) {
         console.error("Erro durante o backup:", err);
-        toast({ title: 'Erro no Backup', description: err.result?.error?.message || 'Não foi possível salvar os dados no Drive.', variant: 'destructive'});
+        toast({ title: 'Erro no Backup', description: err.message || 'Não foi possível salvar os dados no Drive.', variant: 'destructive'});
     } finally {
         setIsProcessing(false);
     }
   };
 
   const handleRestore = async () => {
-     if (!appUser) {
-        toast({ title: 'Erro', description: 'Usuário não identificado.', variant: 'destructive'});
+     if (!appUser || !accessTokenRef.current) {
+        toast({ title: 'Erro', description: 'Usuário não identificado ou Drive não conectado.', variant: 'destructive'});
         return;
     }
     setIsProcessing(true);
@@ -200,19 +178,25 @@ export default function Home() {
     const fileName = `ecofeira_backup_${appUser.uid}.json`;
 
     try {
-        const response = await (window as any).gapi.client.drive.files.list({
-            q: `name='${fileName}' and trashed=false`,
-            spaces: 'appDataFolder',
-            fields: 'files(id, name)',
+        const searchResponse = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and 'appDataFolder' in parents and trashed=false&spaces=appDataFolder&fields=files(id)`, {
+            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` }
         });
-        const files = response.result.files;
+        const searchResult = await searchResponse.json();
+        if (searchResult.error) throw searchResult.error;
+        
+        const files = searchResult.files;
         if (files && files.length > 0) {
             const fileId = files[0].id;
-            const fileResponse = await (window as any).gapi.client.drive.files.get({
-                fileId: fileId,
-                alt: 'media',
+            const fileResponse = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+                headers: { 'Authorization': `Bearer ${accessTokenRef.current}` }
             });
-            const restoredData = fileResponse.result;
+            
+            if (!fileResponse.ok) {
+                const errorBody = await fileResponse.json();
+                throw errorBody.error;
+            }
+
+            const restoredData = await fileResponse.json();
             window.parent.postMessage({ type: 'ECOFEIRA_RESTORE_DATA', payload: restoredData }, PARENT_ORIGIN);
             toast({ title: 'Dados Restaurados!', description: 'Seus dados foram enviados de volta para o EcoFeira.', variant: 'success'});
 
@@ -221,7 +205,7 @@ export default function Home() {
         }
     } catch (err: any) {
          console.error("Erro durante a restauração:", err);
-         toast({ title: 'Erro na Restauração', description: err.result?.error?.message || 'Não foi possível ler os dados do Drive.', variant: 'destructive'});
+         toast({ title: 'Erro na Restauração', description: err.message || 'Não foi possível ler os dados do Drive.', variant: 'destructive'});
     } finally {
         setIsProcessing(false);
     }
@@ -245,7 +229,7 @@ export default function Home() {
                  <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card rounded-lg border border-border">
                     <ShieldX className="h-12 w-12 text-muted-foreground" />
                     <p className="text-muted-foreground">Conecte seu Google Drive para gerenciar seus backups.</p>
-                    <Button onClick={handleDriveConnect} disabled={!appUser || isProcessing || !gapiInited.current}>
+                    <Button onClick={handleDriveConnect} disabled={!appUser || isProcessing}>
                         {isProcessing ? <Loader2 className="animate-spin" /> : 'Conectar ao Google Drive'}
                     </Button>
                 </div>
@@ -273,5 +257,3 @@ export default function Home() {
     </main>
   );
 }
-
-    
