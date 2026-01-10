@@ -1,10 +1,14 @@
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { CheckCircle, LogOut } from 'lucide-react';
+import { CheckCircle, LogOut, Loader2 } from 'lucide-react';
+import type { User } from 'firebase/auth';
 
 interface ConnectDriveProps {
   isConnected: boolean;
-  onConnectToggle: () => void;
+  user: User | null;
+  isLoading: boolean;
+  onSignIn: () => void;
+  onSignOut: () => void;
 }
 
 const GoogleDriveIcon = (props: React.SVGProps<SVGSVGElement>) => (
@@ -15,8 +19,7 @@ const GoogleDriveIcon = (props: React.SVGProps<SVGSVGElement>) => (
     </svg>
 );
 
-
-export function ConnectDrive({ isConnected, onConnectToggle }: ConnectDriveProps) {
+export function ConnectDrive({ isConnected, user, isLoading, onSignIn, onSignOut }: ConnectDriveProps) {
   return (
     <Card className="flex flex-col">
       <CardHeader>
@@ -29,16 +32,18 @@ export function ConnectDrive({ isConnected, onConnectToggle }: ConnectDriveProps
         </CardDescription>
       </CardHeader>
       <CardContent className="flex-grow flex flex-col justify-center items-center gap-4 text-center">
-        {isConnected ? (
+        {isLoading ? (
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        ) : isConnected && user ? (
           <>
-            <p className="font-medium text-lg">user@example.com</p>
+            <p className="font-medium text-lg">{user.email}</p>
             <p className="text-sm text-muted-foreground">Ready to back up to your Drive.</p>
-            <Button variant="outline" className="mt-4" onClick={onConnectToggle}>
+            <Button variant="outline" className="mt-4" onClick={onSignOut}>
               <LogOut className="mr-2 h-4 w-4" /> Disconnect
             </Button>
           </>
         ) : (
-          <Button size="lg" onClick={onConnectToggle}>
+          <Button size="lg" onClick={onSignIn}>
              <GoogleDriveIcon className="mr-2 h-5 w-5" /> Connect to Google Drive
           </Button>
         )}
