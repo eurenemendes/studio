@@ -40,44 +40,28 @@ export default function Home() {
   const { toast } = useToast();
 
   const tokenClient = useRef<any>(null);
+  const gapiInited = useRef(false);
+  const gisInited = useRef(false);
+
 
   const PARENT_ORIGIN = 'https://copyecofeira.vercel.app';
   const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      // Por segurança, sempre verifique a origem da mensagem
-      if (event.origin !== PARENT_ORIGIN) {
-        console.warn('Mensagem recebida de uma origem não confiável:', event.origin);
-        return;
-      }
+  const gapiLoaded = () => {
+    (window as any).gapi.load('client', initializeGapiClient);
+  }
 
-      const { type, user, data } = event.data;
+  const initializeGapiClient = async () => {
+    await (window as any).gapi.client.init({
+      apiKey: firebaseConfig.apiKey,
+      discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+    });
+    gapiInited.current = true;
+  }
 
-      if (type === 'ECOFEIRA_BACKUP_INIT') {
-        console.log('Dados de inicialização recebidos do EcoFeira:', { user, data });
-        setAppUser(user);
-        setParentData(data);
-        toast({
-            title: "Conectado ao EcoFeira!",
-            description: `Bem-vindo, ${user.displayName}.`,
-        });
-      }
-    };
-
-    window.addEventListener('message', handleMessage);
-
-    // Envia uma mensagem para o pai avisando que o iframe está pronto
-    window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, PARENT_ORIGIN);
-
-    // Carrega o GSI (Google Sign-In)
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    script.onload = () => {
+  const gisLoaded = () => {
       tokenClient.current = (window as any).google.accounts.oauth2.initTokenClient({
-        client_id: firebaseConfig.appId, // Reutilizando o appId que na verdade é o client_id
+        client_id: firebaseConfig.appId, 
         scope: DRIVE_SCOPE,
         callback: (tokenResponse: any) => {
           if (tokenResponse && tokenResponse.access_token) {
@@ -100,15 +84,48 @@ export default function Home() {
             });
         }
       });
-    };
-    document.body.appendChild(script);
+      gisInited.current = true;
+  }
 
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== PARENT_ORIGIN) {
+        return;
+      }
+      const { type, user, data } = event.data;
+      if (type === 'ECOFEIRA_BACKUP_INIT') {
+        setAppUser(user);
+        setParentData(data);
+        toast({
+            title: "Conectado ao EcoFeira!",
+            description: `Bem-vindo, ${user.displayName}.`,
+        });
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, PARENT_ORIGIN);
+
+    const scriptGapi = document.createElement('script');
+    scriptGapi.src = 'https://apis.google.com/js/api.js';
+    scriptGapi.async = true;
+    scriptGapi.defer = true;
+    scriptGapi.onload = gapiLoaded;
+    document.body.appendChild(scriptGapi);
+
+    const scriptGis = document.createElement('script');
+    scriptGis.src = 'https://accounts.google.com/gsi/client';
+    scriptGis.async = true;
+    scriptGis.defer = true;
+    scriptGis.onload = gisLoaded;
+    document.body.appendChild(scriptGis);
 
     return () => {
       window.removeEventListener('message', handleMessage);
-      document.body.removeChild(script);
+      document.body.removeChild(scriptGapi);
+      document.body.removeChild(scriptGis);
     };
-  }, [toast]);
+  }, []);
 
   const handleDriveConnect = () => {
     setIsProcessing(true);
@@ -129,35 +146,95 @@ export default function Home() {
         toast({ title: 'Erro', description: 'Dados do EcoFeira não encontrados.', variant: 'destructive'});
         return;
     }
-
     setIsProcessing(true);
-    console.log('Iniciando backup com os dados:', parentData);
 
-    // Simulação da lógica de backup
-    setTimeout(() => {
-         // Lógica para salvar o arquivo `ecofeira_backup_[UID].json` no Drive
-        toast({ title: 'Backup Concluído!', description: 'Seus dados do EcoFeira foram salvos no Google Drive.'});
+    const fileName = `ecofeira_backup_${appUser.uid}.json`;
+    const fileContent = JSON.stringify(parentData);
+    const fileMetadata = {
+        'name': fileName,
+        'mimeType': 'application/json',
+    };
+
+    try {
+        const response = await (window as any).gapi.client.drive.files.list({
+            q: `name='${fileName}' and trashed=false`,
+            spaces: 'drive',
+            fields: 'files(id, name)',
+        });
+
+        const files = response.result.files;
+        const blob = new Blob([fileContent], {type: 'application/json'});
+
+        if (files && files.length > 0) {
+            // Update existing file
+            const fileId = files[0].id;
+            const updateRequest = (window as any).gapi.client.request({
+                path: `/upload/drive/v3/files/${fileId}`,
+                method: 'PATCH',
+                params: { uploadType: 'media' },
+                body: blob,
+            });
+            await updateRequest;
+            toast({ title: 'Backup Atualizado!', description: 'Seus dados foram atualizados no Google Drive.'});
+        } else {
+            // Create new file
+            const formData = new FormData();
+            formData.append('metadata', new Blob([JSON.stringify(fileMetadata)], {type: 'application/json'}));
+            formData.append('file', blob);
+
+            const createRequest = (window as any).gapi.client.request({
+                path: 'https://www.googleapis.com/upload/drive/v3/files',
+                method: 'POST',
+                params: { uploadType: 'multipart' },
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, // This will be overridden by the multipart content
+                body: formData,
+            });
+             await createRequest;
+            toast({ title: 'Backup Concluído!', description: 'Seus dados do EcoFeira foram salvos no Google Drive.'});
+        }
+    } catch(err) {
+        console.error("Erro durante o backup:", err);
+        toast({ title: 'Erro no Backup', description: 'Não foi possível salvar os dados no Drive.', variant: 'destructive'});
+    } finally {
         setIsProcessing(false);
-    }, 2000);
+    }
   };
 
-  const handleRestore = () => {
+  const handleRestore = async () => {
      if (!appUser) {
         toast({ title: 'Erro', description: 'Usuário não identificado.', variant: 'destructive'});
         return;
     }
     setIsProcessing(true);
-    console.log('Iniciando restauração do Drive...');
     
-    // Simulação da lógica de restauração
-    setTimeout(() => {
-        // Lógica para ler o arquivo `ecofeira_backup_[UID].json` do Drive
-        const restoredData = parentData; // Simulação
-        
-        window.parent.postMessage({ type: 'ECOFEIRA_RESTORE_DATA', payload: restoredData }, PARENT_ORIGIN);
-        toast({ title: 'Dados Restaurados!', description: 'Seus dados foram enviados de volta para o EcoFeira.'});
+    const fileName = `ecofeira_backup_${appUser.uid}.json`;
+
+    try {
+        const response = await (window as any).gapi.client.drive.files.list({
+            q: `name='${fileName}' and trashed=false`,
+            spaces: 'drive',
+            fields: 'files(id, name)',
+        });
+        const files = response.result.files;
+        if (files && files.length > 0) {
+            const fileId = files[0].id;
+            const fileResponse = await (window as any).gapi.client.drive.files.get({
+                fileId: fileId,
+                alt: 'media',
+            });
+            const restoredData = fileResponse.result;
+            window.parent.postMessage({ type: 'ECOFEIRA_RESTORE_DATA', payload: restoredData }, PARENT_ORIGIN);
+            toast({ title: 'Dados Restaurados!', description: 'Seus dados foram enviados de volta para o EcoFeira.'});
+
+        } else {
+             toast({ title: 'Nada para restaurar', description: 'Nenhum arquivo de backup encontrado no seu Drive.', variant: 'destructive'});
+        }
+    } catch (err) {
+         console.error("Erro durante a restauração:", err);
+         toast({ title: 'Erro na Restauração', description: 'Não foi possível ler os dados do Drive.', variant: 'destructive'});
+    } finally {
         setIsProcessing(false);
-    }, 2000);
+    }
   };
 
   return (
@@ -178,7 +255,7 @@ export default function Home() {
                  <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card-dark rounded-lg">
                     <ShieldX className="h-12 w-12 text-muted-foreground" />
                     <p className="text-muted-foreground">Conecte seu Google Drive para gerenciar seus backups.</p>
-                    <Button onClick={handleDriveConnect} disabled={!appUser || isProcessing}>
+                    <Button onClick={handleDriveConnect} disabled={!appUser || isProcessing || !gapiInited.current || !gisInited.current}>
                         {isProcessing ? <Loader2 className="animate-spin" /> : 'Conectar ao Google Drive'}
                     </Button>
                 </div>
@@ -201,3 +278,5 @@ export default function Home() {
     </main>
   );
 }
+
+    
