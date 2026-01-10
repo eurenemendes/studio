@@ -1,3 +1,7 @@
+
+'use client';
+
+import { useState, useEffect } from 'react';
 import {
   Card,
   CardContent,
@@ -34,6 +38,31 @@ const StatusIcon = ({ status }: { status: BackupLogEntry['status'] }) => {
   return <XCircle className="h-4 w-4" />;
 }
 
+const LogTableRow = ({ log }: { log: BackupLogEntry }) => {
+  const [formattedDate, setFormattedDate] = useState('');
+
+  useEffect(() => {
+    // Format the date only on the client-side to avoid hydration mismatch
+    setFormattedDate(new Date(log.date).toLocaleString());
+  }, [log.date]);
+
+  return (
+    <TableRow>
+      <TableCell className="font-medium">
+        {formattedDate}
+      </TableCell>
+      <TableCell>
+        <Badge variant={log.status === 'Completed' ? 'secondary' : 'destructive'}>
+          <StatusIcon status={log.status} />
+          <span className="ml-1.5">{log.status}</span>
+        </Badge>
+      </TableCell>
+      <TableCell>{log.details}</TableCell>
+    </TableRow>
+  );
+};
+
+
 export function BackupLog({ logs }: BackupLogProps) {
   return (
     <Card>
@@ -57,18 +86,7 @@ export function BackupLog({ logs }: BackupLogProps) {
             <TableBody>
               {logs.length > 0 ? (
                 logs.map((log) => (
-                  <TableRow key={log.id}>
-                    <TableCell className="font-medium">
-                      {new Date(log.date).toLocaleString()}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={log.status === 'Completed' ? 'secondary' : 'destructive'}>
-                        <StatusIcon status={log.status} />
-                        <span className="ml-1.5">{log.status}</span>
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{log.details}</TableCell>
-                  </TableRow>
+                  <LogTableRow key={log.id} log={log} />
                 ))
               ) : (
                 <TableRow>
