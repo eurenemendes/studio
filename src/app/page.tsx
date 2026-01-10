@@ -1,146 +1,165 @@
-"use client";
+
+'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Header } from '@/components/header';
-import { ConnectDrive } from '@/components/connect-drive';
-import { BackupControls } from '@/components/backup-controls';
-import { BackupLog } from '@/components/backup-log';
-import { useToast } from "@/hooks/use-toast";
-import type { BackupLogEntry } from '@/components/backup-log';
-import { useAuth, useUser } from '@/firebase';
-import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useToast } from '@/hooks/use-toast';
+import { Loader2, ShieldCheck, ShieldX, UploadCloud, DownloadCloud } from 'lucide-react';
 
-const initialLogs: BackupLogEntry[] = [
-  {
-    id: 'log3',
-    date: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-    status: 'Completed',
-    details: 'Full backup of 2,415 items.',
-  },
-  {
-    id: 'log2',
-    date: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-    status: 'Failed',
-    details: 'API connection timed out.',
-  },
-  {
-    id: 'log1',
-    date: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
-    status: 'Completed',
-    details: 'Full backup of 2,388 items.',
-  },
-];
+// Tipos para os dados recebidos do site pai
+interface EcoFeiraUser {
+  uid: string;
+  displayName: string;
+  email: string;
+  photoURL: string;
+}
+
+interface EcoFeiraData {
+  favorites: any[];
+  shoppingList: any[];
+  scannedHistory: any[];
+  recentSearches: any[];
+}
+
+const GoogleDriveIcon = (props: React.SVGProps<SVGSVGElement>) => (
+    <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 28">
+        <path fill="#4285F4" d="M21.102 28H10.898L0 9.333l5.449-9.333h10.204l5.449 9.333z"/>
+        <path fill="#34A853" d="M32 9.333L21.102 28h-5.449L26.551 0h5.449z"/>
+        <path fill="#FFC107" d="M5.449 0L0 9.333l5.449 9.334L10.898 0z"/>
+    </svg>
+);
 
 
 export default function Home() {
-  const [isBackingUp, setIsBackingUp] = useState(false);
-  const [backupProgress, setBackupProgress] = useState(0);
-  const [backupLogs, setBackupLogs] = useState<BackupLogEntry[]>(initialLogs);
+  const [parentData, setParentData] = useState<EcoFeiraData | null>(null);
+  const [appUser, setAppUser] = useState<EcoFeiraUser | null>(null);
+  const [isDriveConnected, setIsDriveConnected] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const { toast } = useToast();
-  const { user, isUserLoading } = useUser();
-  const auth = useAuth();
 
-  const handleSignIn = async () => {
-    const provider = new GoogleAuthProvider();
-    provider.addScope('https://www.googleapis.com/auth/drive.file');
-    try {
-      await signInWithPopup(auth, provider);
-      toast({
-        title: "Successfully connected to Google Drive!",
-        description: "You can now start backing up your data.",
-      });
-    } catch (error) {
-      console.error("Error during sign-in:", error);
-      toast({
-        title: "Connection Failed",
-        description: "Could not connect to Google Drive. Please try again.",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleSignOut = async () => {
-    try {
-      await signOut(auth);
-      toast({
-        title: "Disconnected from Google Drive",
-        description: "You can reconnect anytime.",
-      });
-    } catch (error) {
-      console.error("Error during sign-out:", error);
-      toast({
-        title: "Disconnection Failed",
-        description: "An error occurred while disconnecting. Please try again.",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleBackupStart = useCallback(() => {
-    if (isBackingUp) return;
-
-    setIsBackingUp(true);
-    setBackupProgress(0);
-
-    const interval = setInterval(() => {
-      setBackupProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          return 100;
-        }
-        return prev + 1;
-      });
-    }, 50);
-
-  }, [isBackingUp]);
+  const PARENT_ORIGIN = 'https://copyecofeira.vercel.app';
 
   useEffect(() => {
-    if (backupProgress === 100) {
-      setIsBackingUp(false);
-      
-      const success = Math.random() > 0.2; // 80% success rate
-      const newLog: BackupLogEntry = {
-        id: `log${Date.now()}`,
-        date: new Date().toISOString(),
-        status: success ? 'Completed' : 'Failed',
-        details: success ? `Full backup of ${Math.floor(2000 + Math.random() * 500)} items.` : 'An unknown error occurred.',
-      };
+    const handleMessage = (event: MessageEvent) => {
+      // Por segurança, sempre verifique a origem da mensagem
+      if (event.origin !== PARENT_ORIGIN) {
+        console.warn('Mensagem recebida de uma origem não confiável:', event.origin);
+        return;
+      }
 
-      setBackupLogs((prevLogs) => [newLog, ...prevLogs]);
+      const { type, user, data } = event.data;
 
+      if (type === 'ECOFEIRA_BACKUP_INIT') {
+        console.log('Dados de inicialização recebidos do EcoFeira:', { user, data });
+        setAppUser(user);
+        setParentData(data);
+        toast({
+            title: "Conectado ao EcoFeira!",
+            description: `Bem-vindo, ${user.displayName}.`,
+        });
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+
+    // Envia uma mensagem para o pai avisando que o iframe está pronto
+    window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, PARENT_ORIGIN);
+
+
+    return () => {
+      window.removeEventListener('message', handleMessage);
+    };
+  }, [toast]);
+
+  const handleDriveConnect = () => {
+    // Aqui viria a lógica de autenticação OAuth2 com a API do Google Drive
+    // Por enquanto, vamos apenas simular a conexão.
+    setIsProcessing(true);
+    setTimeout(() => {
+      setIsDriveConnected(true);
+      setIsProcessing(false);
       toast({
-        title: success ? "Backup Complete" : "Backup Failed",
-        description: success ? "Your data has been securely backed up." : "Please try again later.",
-        variant: success ? "default" : "destructive",
+        title: 'Google Drive Conectado!',
+        description: 'Agora você pode fazer backup e restaurar seus dados.',
       });
-    }
-  }, [backupProgress, toast]);
+    }, 1500);
+  };
 
-  const isConnected = !!user;
+  const handleBackup = async () => {
+    if (!parentData || !appUser) {
+        toast({ title: 'Erro', description: 'Dados do EcoFeira não encontrados.', variant: 'destructive'});
+        return;
+    }
+
+    setIsProcessing(true);
+    console.log('Iniciando backup com os dados:', parentData);
+
+    // Simulação da lógica de backup
+    setTimeout(() => {
+         // Lógica para salvar o arquivo `ecofeira_backup_[UID].json` no Drive
+        toast({ title: 'Backup Concluído!', description: 'Seus dados do EcoFeira foram salvos no Google Drive.'});
+        setIsProcessing(false);
+    }, 2000);
+  };
+
+  const handleRestore = () => {
+     if (!appUser) {
+        toast({ title: 'Erro', description: 'Usuário não identificado.', variant: 'destructive'});
+        return;
+    }
+    setIsProcessing(true);
+    console.log('Iniciando restauração do Drive...');
+    
+    // Simulação da lógica de restauração
+    setTimeout(() => {
+        // Lógica para ler o arquivo `ecofeira_backup_[UID].json` do Drive
+        const restoredData = parentData; // Simulação
+        
+        window.parent.postMessage({ type: 'ECOFEIRA_RESTORE_DATA', payload: restoredData }, PARENT_ORIGIN);
+        toast({ title: 'Dados Restaurados!', description: 'Seus dados foram enviados de volta para o EcoFeira.'});
+        setIsProcessing(false);
+    }, 2000);
+  };
 
   return (
-    <div className="flex min-h-screen w-full flex-col">
-      <Header user={user} onSignOut={handleSignOut} />
-      <main className="flex-1 bg-background">
-        <div className="container mx-auto grid max-w-5xl gap-8 px-4 py-8 md:px-6 md:py-12">
-          <div className="grid gap-8 md:grid-cols-2">
-            <ConnectDrive
-              isConnected={isConnected}
-              user={user}
-              isLoading={isUserLoading}
-              onSignIn={handleSignIn}
-              onSignOut={handleSignOut}
-            />
-            <BackupControls
-              isConnected={isConnected}
-              isBackingUp={isBackingUp}
-              backupProgress={backupProgress}
-              onBackupStart={handleBackupStart}
-            />
+    <main className="flex min-h-screen flex-col items-center justify-center bg-background p-4">
+      <Card className="w-full max-w-md">
+        <CardHeader className="text-center">
+          <div className="flex justify-center items-center gap-2 mb-2">
+            <GoogleDriveIcon className="h-7 w-7" />
+            <h1 className="text-2xl font-bold text-foreground">Backup EcoFeira</h1>
           </div>
-          <BackupLog logs={backupLogs} />
-        </div>
-      </main>
-    </div>
+          <CardTitle>Gerenciador de Backup</CardTitle>
+          <CardDescription>
+            {appUser ? `Conectado como ${appUser.displayName}` : 'Aguardando conexão com o EcoFeira...'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-6">
+            {!isDriveConnected ? (
+                 <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card-dark rounded-lg">
+                    <ShieldX className="h-12 w-12 text-muted-foreground" />
+                    <p className="text-muted-foreground">Conecte seu Google Drive para gerenciar seus backups.</p>
+                    <Button onClick={handleDriveConnect} disabled={!appUser || isProcessing}>
+                        {isProcessing ? <Loader2 className="animate-spin" /> : 'Conectar ao Google Drive'}
+                    </Button>
+                </div>
+            ): (
+                 <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card-dark rounded-lg">
+                    <ShieldCheck className="h-12 w-12 text-primary" />
+                    <p className="text-muted-foreground">Conexão com Google Drive ativa.</p>
+                    <div className="grid grid-cols-2 gap-4 w-full">
+                         <Button onClick={handleBackup} disabled={isProcessing} className="bg-primary hover:bg-primary/90">
+                            {isProcessing ? <Loader2 className="animate-spin" /> : <><UploadCloud className="mr-2"/> Fazer Backup</>}
+                        </Button>
+                        <Button onClick={handleRestore} disabled={isProcessing} variant="secondary">
+                            {isProcessing ? <Loader2 className="animate-spin" /> : <><DownloadCloud className="mr-2"/> Restaurar</>}
+                        </Button>
+                    </div>
+                </div>
+            )}
+        </CardContent>
+      </Card>
+    </main>
   );
 }
