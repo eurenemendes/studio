@@ -1,0 +1,164 @@
+{
+  "entities": {
+    "DriveVaultUser": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "DriveVaultUser",
+      "type": "object",
+      "description": "Represents a user of the DriveVault application.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the DriveVaultUser entity."
+        },
+        "googleDriveAccountId": {
+          "type": "string",
+          "description": "Reference to the GoogleDriveAccount connected to this user. (Relationship: DriveVaultUser 1:1 GoogleDriveAccount)"
+        }
+      },
+      "required": [
+        "id",
+        "googleDriveAccountId"
+      ]
+    },
+    "GoogleDriveAccount": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "GoogleDriveAccount",
+      "type": "object",
+      "description": "Represents a connected Google Drive account.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the GoogleDriveAccount entity."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Reference to the DriveVaultUser who owns this account. (Relationship: DriveVaultUser 1:1 GoogleDriveAccount)"
+        },
+        "accessToken": {
+          "type": "string",
+          "description": "Access token for the Google Drive account."
+        },
+        "refreshToken": {
+          "type": "string",
+          "description": "Refresh token for the Google Drive account."
+        },
+        "email": {
+          "type": "string",
+          "description": "The email address associated with the Google Drive account.",
+          "format": "email"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "accessToken",
+        "refreshToken",
+        "email"
+      ]
+    },
+    "BackupLog": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "BackupLog",
+      "type": "object",
+      "description": "Represents a log entry for a backup activity.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the BackupLog entity."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Reference to the DriveVaultUser who initiated the backup. (Relationship: DriveVaultUser 1:N BackupLog)"
+        },
+        "startTime": {
+          "type": "string",
+          "description": "Timestamp indicating when the backup started.",
+          "format": "date-time"
+        },
+        "endTime": {
+          "type": "string",
+          "description": "Timestamp indicating when the backup finished.",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "description": "Status of the backup (e.g., 'running', 'completed', 'failed')."
+        },
+        "message": {
+          "type": "string",
+          "description": "Any relevant message or error associated with the backup."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "startTime",
+        "endTime",
+        "status"
+      ]
+    }
+  },
+  "auth": {
+    "providers": [
+      "password",
+      "anonymous"
+    ]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "/users/{userId}/drivevault_user",
+        "definition": {
+          "entityName": "DriveVaultUser",
+          "schema": {
+            "$ref": "#/backend/entities/DriveVaultUser"
+          },
+          "description": "Stores DriveVaultUser data, owned by the user. Path-based ownership ensures only the user can access this data.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The ID of the user."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/google_drive_account",
+        "definition": {
+          "entityName": "GoogleDriveAccount",
+          "schema": {
+            "$ref": "#/backend/entities/GoogleDriveAccount"
+          },
+          "description": "Stores GoogleDriveAccount data, owned by the user. Path-based ownership ensures only the user can access their own Google Drive account details.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The ID of the user."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/backup_logs/{backupLogId}",
+        "definition": {
+          "entityName": "BackupLog",
+          "schema": {
+            "$ref": "#/backend/entities/BackupLog"
+          },
+          "description": "Stores BackupLog data for each user. Path-based ownership ensures only the user can access their own backup logs.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The ID of the user."
+            },
+            {
+              "name": "backupLogId",
+              "description": "The ID of the backup log."
+            }
+          ]
+        }
+      }
+    ],
+    "reasoning": "The Firestore data structure is designed to ensure secure and scalable data management for the DriveVault application. The core principle is Authorization Independence, achieved through denormalization, which avoids complex `get()` calls in security rules and enables atomic operations. We also enforce structural segregation and standardized access modeling for clarity and consistency.\n\n*   **DriveVaultUser (Private Data):** Stores user-specific data. The structure follows path-based ownership under `/users/{userId}/drivevault_user`. This ensures that each user can only access their own data. This enables atomic operations and simplifies security rules.\n*   **GoogleDriveAccount (Private Data):**  Stores the connected Google Drive account details for a user. This structure follows path-based ownership under `/users/{userId}/google_drive_account`. This ensures that each user can only access their own Google Drive account details. This enables atomic operations and simplifies security rules.\n*   **BackupLog (Private Data):** Stores backup logs for each user. The structure follows path-based ownership under `/users/{userId}/backup_logs/{backupLogId}`. This isolates backup logs to their respective users and enforces clear ownership. This also enables atomic operations and simplifies security rules.\n\nThis structure supports required QAPs:\n\n*   **Secure List Operations:** Path-based ownership ensures that listing documents under `/users/{userId}/...` only returns data accessible to the authenticated user, preventing unauthorized data exposure."
+  }
+}

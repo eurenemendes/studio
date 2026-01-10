@@ -1,0 +1,151 @@
+/**
+ * This ruleset enforces a strict user-ownership model for the DriveVault application.
+ *
+ * Core Philosophy:
+ * The security model is built on path-based ownership. All user data, including
+ * Google Drive account credentials and backup logs, is stored in subcollections
+ * under that user's unique ID. This ensures that users can only ever access their
+ * own data, and no one else's. There is no public or shared data.
+ *
+ * Data Structure:
+ * All application data is nested under the `/users/{userId}` path. For example, a user's
+ * backup logs are stored at `/users/{userId}/backup_logs/{backupLogId}`. This structure
+ * allows for simple, performant security rules that do not require extra database reads (`get` calls)
+ * to verify permissions.
+ *
+ * Key Security Decisions:
+ * - Strict User Isolation: All data is private. A user can only access documents
+ *   within their own data tree (i.e., paths starting with `/users/{their_auth_uid}`).
+ * - No User Listing: It is not possible to list all users in the database.
+ * - Write Integrity: When creating new documents, rules ensure that the document's
+ *   internal `userId` or `id` field matches the user creating it, enforcing a consistent
+ *   and unbreakable link between the data and its owner. This ownership link is immutable
+ *   and cannot be changed on update.
+ * - Prototyping Flexibility: While authorization is strict, these rules do not
+ *   validate the specific shape or data types of documents, allowing for rapid
+ *   frontend iteration.
+ */
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --------------------------------------------------------------------------------
+    // Helper Functions
+    // --------------------------------------------------------------------------------
+
+    /**
+     * Checks if a user is authenticated.
+     */
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    /**
+     * Checks if the currently authenticated user's UID matches the provided userId.
+     * This is the foundation of the user-ownership model.
+     * @param userId The UID to check against the request's auth UID.
+     */
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    /**
+     * Verifies ownership for an existing resource. Used for update/delete operations.
+     * Ensures the document exists before allowing the operation.
+     * @param userId The UID of the resource owner.
+     */
+    function isExistingOwner(userId) {
+      return isOwner(userId) && resource != null;
+    }
+    
+    /**
+     * Validates that a user is creating a resource for themselves and that the
+     * internal 'userId' field correctly links back to them.
+     * @param userId The UID from the document path.
+     * @param resourceData The incoming document data from the request.
+     */
+    function isCreatingOwnResourceWithUserId(userId, resourceData) {
+      return isOwner(userId) && resourceData.userId == userId;
+    }
+
+    /**
+     * Validates that a user is creating a resource for themselves and that the
+     * internal 'id' field correctly links back to them.
+     * @param userId The UID from the document path.
+     * @param resourceData The incoming document data from the request.
+     */
+    function isCreatingOwnResourceWithId(userId, resourceData) {
+      return isOwner(userId) && resourceData.id == userId;
+    }
+
+    // --------------------------------------------------------------------------------
+    // Collection Rules
+    // --------------------------------------------------------------------------------
+
+    /**
+     * @description The top-level users collection. Direct access is denied to
+     * prevent listing all application users. Rules are defined on subcollections.
+     * @path /users/{userId}
+     * @allow (none) - No direct reads or writes are permitted on user root documents.
+     * @deny An unauthenticated user trying to list all users via `collection('users').get()`.
+     * @principle Prevents enumeration of all users in the database.
+     */
+    match /users/{userId} {
+      allow get: if false;
+      allow list: if false;
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+
+      /**
+       * @description Stores the core user profile for the DriveVault app.
+       * Only the authenticated owner of this document can read or write to it.
+       * @path /users/{userId}/drivevault_user/{docId}
+       * @allow A user with UID 'user123' creating a document at `/users/user123/drivevault_user/profile`
+       *        with `{ "id": "user123", ... }`.
+       * @deny A user with UID 'user456' trying to read `/users/user123/drivevault_user/profile`.
+       * @principle Restricts access to a user's own private data tree and validates relational integrity on creation.
+       */
+      match /drivevault_user/{docId} {
+        allow get: if isOwner(userId);
+        allow list: if isOwner(userId);
+        allow create: if isCreatingOwnResourceWithId(userId, request.resource.data);
+        allow update: if isExistingOwner(userId) && request.resource.data.id == resource.data.id;
+        allow delete: if isExistingOwner(userId);
+      }
+
+      /**
+       * @description Stores sensitive Google Drive account credentials. Access is strictly
+       * limited to the user who owns the account.
+       * @path /users/{userId}/google_drive_account/{docId}
+       * @allow A user with UID 'user123' reading their own token at `/users/user123/google_drive_account/gdrive_token`.
+       * @deny Any user trying to update the `userId` field on an existing document.
+       * @principle Enforces strict ownership for highly sensitive data and ensures the ownership link is immutable.
+       */
+      match /google_drive_account/{docId} {
+        allow get: if isOwner(userId);
+        allow list: if isOwner(userId);
+        allow create: if isCreatingOwnResourceWithUserId(userId, request.resource.data);
+        allow update: if isExistingOwner(userId) && request.resource.data.userId == resource.data.userId;
+        allow delete: if isExistingOwner(userId);
+      }
+      
+      /**
+       * @description Stores logs of backup activities. Users can manage their own logs,
+       * but cannot see logs from any other user.
+       * @path /users/{userId}/backup_logs/{backupLogId}
+       * @allow A user with UID 'user123' creating a log at `/users/user123/backup_logs/log_abc`
+       *        with `{ "userId": "user123", "status": "completed", ... }`.
+       * @deny A user with UID 'user456' trying to list logs at `/users/user123/backup_logs`.
+       * @principle Enforces document ownership for all read and write operations.
+       */
+      match /backup_logs/{backupLogId} {
+        allow get: if isOwner(userId);
+        allow list: if isOwner(userId);
+        allow create: if isCreatingOwnResourceWithUserId(userId, request.resource.data);
+        allow update: if isExistingOwner(userId) && request.resource.data.userId == resource.data.userId;
+        allow delete: if isExistingOwner(userId);
+      }
+    }
+  }
+}
