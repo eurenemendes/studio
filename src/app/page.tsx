@@ -38,15 +38,24 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
   const { toast } = useToast();
   const accessTokenRef = useRef<string | null>(null);
+  const parentOriginRef = useRef<string | null>(null);
 
-  // Define a origem do site pai para validação de segurança
-  const PARENT_ORIGIN = 'https://copyecofeira.vercel.app';
+  // Define a lista de origens do site pai para validação de segurança
+  const ALLOWED_PARENT_ORIGINS = [
+    'https://copyecofeira.vercel.app',
+    'https://ecofeiraintv3.vercel.app',
+  ];
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.origin !== PARENT_ORIGIN) {
+      if (!ALLOWED_PARENT_ORIGINS.includes(event.origin)) {
         console.warn('Mensagem recebida de uma origem não confiável:', event.origin);
         return;
+      }
+      
+      // Guarda a origem do pai que iniciou a comunicação
+      if (!parentOriginRef.current) {
+        parentOriginRef.current = event.origin;
       }
       
       const { type, user, data, token } = event.data;
@@ -83,18 +92,30 @@ export default function Home() {
     };
 
     window.addEventListener('message', handleMessage);
-    // Informa ao pai que o iframe está pronto para receber dados
-    window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, PARENT_ORIGIN);
+    
+    // Tenta informar a todos os pais que está pronto
+    // Apenas o pai correto irá responder
+    window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, '*');
     
     return () => {
       window.removeEventListener('message', handleMessage);
     };
   }, []);
 
+  const postMessageToParent = (message: any) => {
+    if (parentOriginRef.current) {
+      window.parent.postMessage(message, parentOriginRef.current);
+    } else {
+      // Fallback para o caso de a origem ainda não ter sido definida (pouco provável)
+      console.warn("Origem do pai não definida, enviando para a primeira da lista.");
+      window.parent.postMessage(message, ALLOWED_PARENT_ORIGINS[0]);
+    }
+  };
+
   const handleDriveConnect = () => {
     setIsProcessing(true);
     // Pede ao site pai para iniciar o fluxo de conexão com o Drive
-    window.parent.postMessage({ type: 'DRIVE_CONNECT_REQUEST' }, PARENT_ORIGIN);
+    postMessageToParent({ type: 'DRIVE_CONNECT_REQUEST' });
   };
 
   const handleBackup = async () => {
@@ -197,7 +218,7 @@ export default function Home() {
             }
 
             const restoredData = await fileResponse.json();
-            window.parent.postMessage({ type: 'ECOFEIRA_RESTORE_DATA', payload: restoredData }, PARENT_ORIGIN);
+            postMessageToParent({ type: 'ECOFEIRA_RESTORE_DATA', payload: restoredData });
             toast({ title: 'Dados Restaurados!', description: 'Seus dados foram enviados de volta para o EcoFeira.', variant: 'success'});
 
         } else {

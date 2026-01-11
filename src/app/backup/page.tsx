@@ -57,7 +57,7 @@ export default function BackupPage() {
       if (window.google) {
         tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
           client_id: GOOGLE_CLIENT_ID,
-          scope: 'https://www.googleapis.com/auth/drive.file',
+          scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata',
           callback: handleTokenResponse,
         });
       }
