@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, ShieldCheck, ShieldX, UploadCloud, DownloadCloud } from 'lucide-react';
+import { Loader2, ShieldCheck, ShieldX, UploadCloud, DownloadCloud, CheckCircle2 } from 'lucide-react';
 
 // Tipos para os dados recebidos do site pai
 interface EcoFeiraUser {
@@ -35,57 +35,132 @@ export default function Home() {
   const [parentData, setParentData] = useState<EcoFeiraData | null>(null);
   const [appUser, setAppUser] = useState<EcoFeiraUser | null>(null);
   const [isDriveConnected, setIsDriveConnected] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [lastBackupStatus, setLastBackupStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  
   const { toast } = useToast();
+  
   const accessTokenRef = useRef<string | null>(null);
   const parentOriginRef = useRef<string | null>(null);
 
-  // Define a lista de origens do site pai para validação de segurança
+  // Refs para a lógica de throttling
+  const isThrottled = useRef(false);
+  const throttleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   const ALLOWED_PARENT_ORIGINS = [
     'https://copyecofeira.vercel.app',
     'https://ecofeiraintv3.vercel.app',
   ];
 
+  const handleBackup = useCallback(async (dataToBackup: EcoFeiraData) => {
+    if (!appUser || !accessTokenRef.current) {
+        setLastBackupStatus('error');
+        console.error('Backup não pode ser realizado: Dados ou conexão com o Drive não encontrados.');
+        return;
+    }
+    
+    // Inicia o throttling
+    isThrottled.current = true;
+    setLastBackupStatus('saving');
+
+    const fileName = `ecofeira_backup_${appUser.uid}.json`;
+    const fileContent = JSON.stringify(dataToBackup);
+    const fileMetadata = {
+        'name': fileName,
+        'mimeType': 'application/json',
+        'parents': ['appDataFolder'] 
+    };
+
+    try {
+        const searchResponse = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and 'appDataFolder' in parents and trashed=false&spaces=appDataFolder&fields=files(id)`, {
+            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` }
+        });
+        const searchResult = await searchResponse.json();
+        if (searchResult.error) throw searchResult.error;
+        
+        const files = searchResult.files;
+        const blob = new Blob([fileContent], {type: 'application/json'});
+        let uploadUrl: string;
+        let method: 'POST' | 'PATCH';
+        let body: any;
+
+        if (files && files.length > 0) {
+            const fileId = files[0].id;
+            uploadUrl = `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`;
+            method = 'PATCH';
+            body = blob;
+        } else {
+            uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+            method = 'POST';
+            const formData = new FormData();
+            formData.append('metadata', new Blob([JSON.stringify(fileMetadata)], { type: 'application/json' }));
+            formData.append('file', blob);
+            body = formData;
+        }
+        
+        const uploadResponse = await fetch(uploadUrl, {
+            method: method,
+            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` },
+            body: body,
+        });
+
+        const uploadResult = await uploadResponse.json();
+        if (uploadResult.error) throw uploadResult.error;
+
+        setLastBackupStatus('saved');
+
+    } catch(err: any) {
+        console.error("Erro durante o backup automático:", err);
+        setLastBackupStatus('error');
+        toast({ title: 'Erro na Sincronização', description: err.message || 'Não foi possível salvar os dados no Drive.', variant: 'destructive'});
+    } finally {
+        // Libera o throttle após 20 segundos
+        if (throttleTimeoutRef.current) clearTimeout(throttleTimeoutRef.current);
+        throttleTimeoutRef.current = setTimeout(() => {
+            isThrottled.current = false;
+        }, 20000); // 20 segundos
+    }
+  }, [appUser, toast]);
+
+
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (!ALLOWED_PARENT_ORIGINS.includes(event.origin)) {
-        console.warn('Mensagem recebida de uma origem não confiável:', event.origin);
         return;
       }
       
-      // Guarda a origem do pai que iniciou a comunicação
       if (!parentOriginRef.current) {
         parentOriginRef.current = event.origin;
       }
       
-      const { type, user, data, token } = event.data;
+      const { type, user, data, token, error } = event.data;
 
       if (type === 'ECOFEIRA_BACKUP_INIT') {
         setAppUser(user);
-        setParentData(data);
-        toast({
-            title: "Conectado ao EcoFeira!",
-            description: `Bem-vindo, ${user.displayName}.`,
-        });
+        
+        // Se houver dados novos, aciona o backup (respeitando o throttle)
+        if(data && !isThrottled.current) {
+          handleBackup(data);
+        }
       }
 
       if (type === 'DRIVE_TOKEN_RESPONSE' && token) {
          accessTokenRef.current = token;
          setIsDriveConnected(true);
-         setIsProcessing(false);
+         setIsConnecting(false);
          toast({
            title: 'Google Drive Conectado!',
-           description: 'Agora você pode fazer backup e restaurar seus dados.',
+           description: 'A sincronização automática está ativa.',
            variant: 'success'
          });
       }
 
       if (type === 'DRIVE_TOKEN_ERROR') {
-          console.error('Erro de autenticação do Drive recebido do pai:', event.data.error);
-          setIsProcessing(false);
+          console.error('Erro de autenticação do Drive recebido do pai:', error);
+          setIsConnecting(false);
           toast({
               title: 'Erro de conexão',
-              description: 'Não foi possível conectar ao Google Drive através do EcoFeira.',
+              description: 'Não foi possível conectar ao Google Drive.',
               variant: 'destructive',
           });
       }
@@ -93,143 +168,51 @@ export default function Home() {
 
     window.addEventListener('message', handleMessage);
     
-    // Tenta informar a todos os pais que está pronto
-    // Apenas o pai correto irá responder
     window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, '*');
     
     return () => {
       window.removeEventListener('message', handleMessage);
+      if (throttleTimeoutRef.current) clearTimeout(throttleTimeoutRef.current);
     };
-  }, []);
+  }, [handleBackup, toast]);
 
-  const postMessageToParent = (message: any) => {
-    if (parentOriginRef.current) {
-      window.parent.postMessage(message, parentOriginRef.current);
-    } else {
-      // Fallback para o caso de a origem ainda não ter sido definida (pouco provável)
-      console.warn("Origem do pai não definida, enviando para a primeira da lista.");
-      window.parent.postMessage(message, ALLOWED_PARENT_ORIGINS[0]);
-    }
-  };
 
   const handleDriveConnect = () => {
-    setIsProcessing(true);
-    // Pede ao site pai para iniciar o fluxo de conexão com o Drive
-    postMessageToParent({ type: 'DRIVE_CONNECT_REQUEST' });
-  };
-
-  const handleBackup = async () => {
-    if (!parentData || !appUser || !accessTokenRef.current) {
-        toast({ title: 'Erro', description: 'Dados ou conexão com o Drive não encontrados.', variant: 'destructive'});
-        return;
-    }
-    setIsProcessing(true);
-
-    const fileName = `ecofeira_backup_${appUser.uid}.json`;
-    const fileContent = JSON.stringify(parentData);
-    const fileMetadata = {
-        'name': fileName,
-        'mimeType': 'application/json',
-    };
-
-    try {
-        // 1. Pesquisar pelo arquivo
-        const searchResponse = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and 'appDataFolder' in parents and trashed=false&spaces=appDataFolder&fields=files(id)`, {
-            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` }
-        });
-        const searchResult = await searchResponse.json();
-
-        if (searchResult.error) throw searchResult.error;
-        
-        const files = searchResult.files;
-        const blob = new Blob([fileContent], {type: 'application/json'});
-        let uploadUrl: string;
-        let method: 'POST' | 'PATCH';
-
-        if (files && files.length > 0) {
-            // Arquivo existe, vamos atualizar (PATCH)
-            const fileId = files[0].id;
-            uploadUrl = `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`;
-            method = 'PATCH';
-        } else {
-            // Arquivo não existe, vamos criar (POST)
-            uploadUrl = `https://www.googleapis.com/upload/drive/v3/files?uploadType=media`;
-            method = 'POST';
-        }
-        
-        // Crie um novo FormData para o upload
-        const formData = new FormData();
-        if (method === 'POST') {
-             // Para criar, precisamos dos metadados e do arquivo
-             formData.append('metadata', new Blob([JSON.stringify({ ...fileMetadata, parents: ['appDataFolder'] })], { type: 'application/json' }));
-             formData.append('file', blob);
-             uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-        } else {
-            // Para atualizar, só o conteúdo do arquivo
-             uploadUrl = `https://www.googleapis.com/upload/drive/v3/files/${files[0].id}?uploadType=media`;
-             formData.append('file', blob); // Embora não seja um 'form', o corpo será o blob
-        }
-
-        const uploadResponse = await fetch(uploadUrl, {
-            method: method,
-            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` },
-            body: method === 'POST' ? formData : blob,
-        });
-
-        const uploadResult = await uploadResponse.json();
-        if (uploadResult.error) throw uploadResult.error;
-
-        toast({ title: `Backup ${method === 'POST' ? 'Concluído' : 'Atualizado'}!`, description: 'Seus dados foram salvos no Google Drive.', variant: 'success'});
-
-    } catch(err: any) {
-        console.error("Erro durante o backup:", err);
-        toast({ title: 'Erro no Backup', description: err.message || 'Não foi possível salvar os dados no Drive.', variant: 'destructive'});
-    } finally {
-        setIsProcessing(false);
+    setIsConnecting(true);
+    if (parentOriginRef.current) {
+      window.parent.postMessage({ type: 'DRIVE_CONNECT_REQUEST' }, parentOriginRef.current);
+    } else {
+      console.error("Origem do pai não definida, não é possível solicitar conexão.");
+      toast({ title: 'Erro de Comunicação', description: 'Não foi possível contatar o site principal.', variant: 'destructive' });
+      setIsConnecting(false);
     }
   };
 
-  const handleRestore = async () => {
-     if (!appUser || !accessTokenRef.current) {
-        toast({ title: 'Erro', description: 'Usuário não identificado ou Drive não conectado.', variant: 'destructive'});
-        return;
+  const renderStatus = () => {
+    if (!isDriveConnected) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card rounded-lg border border-border">
+          <ShieldX className="h-12 w-12 text-muted-foreground" />
+          <p className="text-muted-foreground">Conecte seu Google Drive para ativar a sincronização automática.</p>
+          <Button onClick={handleDriveConnect} disabled={!appUser || isConnecting}>
+              {isConnecting ? <Loader2 className="animate-spin" /> : 'Conectar ao Google Drive'}
+          </Button>
+        </div>
+      );
     }
-    setIsProcessing(true);
-    
-    const fileName = `ecofeira_backup_${appUser.uid}.json`;
 
-    try {
-        const searchResponse = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and 'appDataFolder' in parents and trashed=false&spaces=appDataFolder&fields=files(id)`, {
-            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` }
-        });
-        const searchResult = await searchResponse.json();
-        if (searchResult.error) throw searchResult.error;
-        
-        const files = searchResult.files;
-        if (files && files.length > 0) {
-            const fileId = files[0].id;
-            const fileResponse = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-                headers: { 'Authorization': `Bearer ${accessTokenRef.current}` }
-            });
-            
-            if (!fileResponse.ok) {
-                const errorBody = await fileResponse.json();
-                throw errorBody.error;
-            }
-
-            const restoredData = await fileResponse.json();
-            postMessageToParent({ type: 'ECOFEIRA_RESTORE_DATA', payload: restoredData });
-            toast({ title: 'Dados Restaurados!', description: 'Seus dados foram enviados de volta para o EcoFeira.', variant: 'success'});
-
-        } else {
-             toast({ title: 'Nada para restaurar', description: 'Nenhum arquivo de backup encontrado no seu Drive.', variant: 'destructive'});
-        }
-    } catch (err: any) {
-         console.error("Erro durante a restauração:", err);
-         toast({ title: 'Erro na Restauração', description: err.message || 'Não foi possível ler os dados do Drive.', variant: 'destructive'});
-    } finally {
-        setIsProcessing(false);
-    }
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card rounded-lg border-2 border-green-500/50">
+        <ShieldCheck className="h-12 w-12 text-primary" />
+        <p className="font-semibold text-primary">Sincronização Ativa</p>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          {lastBackupStatus === 'saving' && <><Loader2 className="h-4 w-4 animate-spin" /> Salvando...</>}
+          {lastBackupStatus === 'saved' && <><CheckCircle2 className="h-4 w-4 text-green-400" /> Sincronizado</>}
+          {lastBackupStatus === 'error' && <p className="text-destructive">Erro na última sincronização</p>}
+          {lastBackupStatus === 'idle' && <p>Aguardando alterações...</p>}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -240,34 +223,13 @@ export default function Home() {
             <GoogleDriveIcon className="h-8 w-8" />
             <h1 className="text-3xl font-bold text-foreground">DriveVault</h1>
           </div>
-          <CardTitle className="text-xl">Backup do EcoFeira</CardTitle>
+          <CardTitle className="text-xl">Sincronização do EcoFeira</CardTitle>
           <CardDescription>
             {appUser ? `Conectado como ${appUser.displayName}` : 'Aguardando conexão com o EcoFeira...'}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
-            {!isDriveConnected ? (
-                 <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card rounded-lg border border-border">
-                    <ShieldX className="h-12 w-12 text-muted-foreground" />
-                    <p className="text-muted-foreground">Conecte seu Google Drive para gerenciar seus backups.</p>
-                    <Button onClick={handleDriveConnect} disabled={!appUser || isProcessing}>
-                        {isProcessing ? <Loader2 className="animate-spin" /> : 'Conectar ao Google Drive'}
-                    </Button>
-                </div>
-            ): (
-                 <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card rounded-lg border border-border">
-                    <ShieldCheck className="h-12 w-12 text-primary" />
-                    <p className="text-muted-foreground">Conexão com Google Drive ativa.</p>
-                    <div className="grid grid-cols-2 gap-4 w-full mt-2">
-                         <Button onClick={handleBackup} disabled={isProcessing} className="bg-primary hover:bg-primary/90">
-                            {isProcessing ? <Loader2 className="animate-spin" /> : <><UploadCloud className="mr-2"/> Fazer Backup</>}
-                        </Button>
-                        <Button onClick={handleRestore} disabled={isProcessing} variant="secondary">
-                            {isProcessing ? <Loader2 className="animate-spin" /> : <><DownloadCloud className="mr-2"/> Restaurar</>}
-                        </Button>
-                    </div>
-                </div>
-            )}
+            {renderStatus()}
         </CardContent>
       </Card>
       <footer className="text-center mt-6">
@@ -278,3 +240,5 @@ export default function Home() {
     </main>
   );
 }
+
+    
