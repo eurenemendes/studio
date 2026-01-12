@@ -30,17 +30,17 @@ const GoogleDriveIcon = (props: React.SVGProps<SVGSVGElement>) => (
 );
 
 export default function Home() {
-  const [appUser, setAppUser] = useState<EcoFeiraUser | null>(null);
+  const [displayName, setDisplayName] = useState<string | null>(null);
   const [isDriveConnected, setIsDriveConnected] = useState(false);
   const [lastBackupStatus, setLastBackupStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   
   const { toast } = useToast();
   
   const accessTokenRef = useRef<string | null>(null);
-  const parentOriginRef = useRef<string | null>(null);
   const appDataRef = useRef<EcoFeiraData | null>(null);
-
-  // Refs para a lógica de throttling
+  const appUserRef = useRef<EcoFeiraUser | null>(null);
+  const parentOriginRef = useRef<string | null>(null);
+  
   const isThrottled = useRef(false);
   const throttleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -50,21 +50,26 @@ export default function Home() {
   ];
 
   const handleBackup = useCallback(async () => {
-    // Agora verifica appDataRef.current em vez de um parâmetro
+    if (isThrottled.current) return;
+
     const dataToBackup = appDataRef.current;
-    
-    if (!appUser || !accessTokenRef.current || !dataToBackup) {
+    const currentUser = appUserRef.current;
+    const accessToken = accessTokenRef.current;
+
+    if (!currentUser || !accessToken || !dataToBackup) {
         setLastBackupStatus('error');
-        console.error('Backup não pode ser realizado: Dados do usuário, dados do app ou conexão com o Drive não encontrados.');
+        console.error('Backup não pode ser realizado: Dados do usuário, dados do app ou conexão com o Drive não encontrados.', {
+            hasUser: !!currentUser,
+            hasToken: !!accessToken,
+            hasData: !!dataToBackup
+        });
         return;
     }
-    
-    if (isThrottled.current) return;
 
     isThrottled.current = true;
     setLastBackupStatus('saving');
 
-    const fileName = `ecofeira_backup_${appUser.uid}.json`;
+    const fileName = `ecofeira_backup_${currentUser.uid}.json`;
     const fileContent = JSON.stringify(dataToBackup);
     const fileMetadata = {
         'name': fileName,
@@ -74,7 +79,7 @@ export default function Home() {
 
     try {
         const searchResponse = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and 'appDataFolder' in parents and trashed=false&spaces=appDataFolder&fields=files(id)`, {
-            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` }
+            headers: { 'Authorization': `Bearer ${accessToken}` }
         });
 
         if (!searchResponse.ok) {
@@ -88,7 +93,7 @@ export default function Home() {
         const blob = new Blob([fileContent], {type: 'application/json'});
         let uploadUrl: string;
         let method: 'POST' | 'PATCH';
-        let headers: HeadersInit = { 'Authorization': `Bearer ${accessTokenRef.current}` };
+        let headers: HeadersInit = { 'Authorization': `Bearer ${accessToken}` };
         let body: any;
 
         if (files && files.length > 0) {
@@ -129,7 +134,14 @@ export default function Home() {
             isThrottled.current = false;
         }, 20000); // 20 segundos
     }
-  }, [appUser, toast]);
+  }, [toast]);
+
+  const tryBackup = useCallback(() => {
+    if (appUserRef.current && appDataRef.current && accessTokenRef.current) {
+      handleBackup();
+    }
+  }, [handleBackup]);
+
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -144,13 +156,10 @@ export default function Home() {
       const { type, user, data, token, error } = event.data;
 
       if (type === 'ECOFEIRA_BACKUP_INIT') {
-        setAppUser(user);
-        appDataRef.current = data; // Armazena os dados recebidos na ref
-
-        // Se já temos o token, podemos tentar o backup
-        if(accessTokenRef.current) {
-          handleBackup();
-        }
+        appUserRef.current = user;
+        appDataRef.current = data;
+        if (user) setDisplayName(user.displayName);
+        tryBackup();
       }
 
       if (type === 'DRIVE_TOKEN_RESPONSE' && token) {
@@ -161,11 +170,7 @@ export default function Home() {
            description: 'A sincronização automática está ativa.',
            variant: 'success'
          });
-
-         // Se já temos os dados, podemos tentar o backup
-         if(appDataRef.current) {
-           handleBackup();
-         }
+         tryBackup();
       }
 
       if (type === 'DRIVE_TOKEN_ERROR') {
@@ -188,7 +193,7 @@ export default function Home() {
       window.removeEventListener('message', handleMessage);
       if (throttleTimeoutRef.current) clearTimeout(throttleTimeoutRef.current);
     };
-  }, [handleBackup, toast]);
+  }, [toast, tryBackup]);
 
 
   const renderStatus = () => {
@@ -226,7 +231,7 @@ export default function Home() {
           </div>
           <CardTitle className="text-xl">Sincronização do EcoFeira</CardTitle>
           <CardDescription>
-            {appUser ? `Conectado como ${appUser.displayName}` : 'Aguardando conexão com o EcoFeira...'}
+            {displayName ? `Conectado como ${displayName}` : 'Conexão gerenciada pelo EcoFeira.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
