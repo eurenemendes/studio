@@ -24,7 +24,6 @@ export default function BackupPage() {
   const tokenClientRef = useRef<any>(null);
 
   const CHILD_APP_URL = 'https://drivervault.vercel.app/';
-  // ID de Cliente OAuth 2.0 correto para o projeto.
   const GOOGLE_CLIENT_ID = '349676062186-jsle32i8463qpad128u2g7grjtj4td33.apps.googleusercontent.com';
 
   // Função para lidar com a resposta do token do Google
@@ -60,6 +59,12 @@ export default function BackupPage() {
           scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata',
           callback: handleTokenResponse,
         });
+        
+        // Se o iframe já estiver pronto quando o GSI carregar, inicia a autenticação.
+        if (isIframeReady) {
+            console.log('GSI carregado e iframe pronto, solicitando token...');
+            tokenClientRef.current.requestAccessToken();
+        }
       }
     };
     document.body.appendChild(script);
@@ -67,12 +72,12 @@ export default function BackupPage() {
     return () => {
       document.body.removeChild(script);
     };
-  }, [handleTokenResponse]);
+  }, [handleTokenResponse, isIframeReady]);
 
   // Efeito para gerenciar a comunicação com o iframe
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.origin !== new URL(CHILD_APP_URL).origin) {
+      if (!['https://drivervault.vercel.app', 'https://copyecofeira.vercel.app', 'https://ecofeiraintv3.vercel.app'].includes(event.origin)) {
         return;
       }
 
@@ -81,13 +86,10 @@ export default function BackupPage() {
       if (type === 'ECOFEIRA_BACKUP_READY') {
         console.log('Site filho de backup está pronto.');
         setIsIframeReady(true);
-      } else if (type === 'DRIVE_CONNECT_REQUEST') {
-        console.log('Recebida solicitação de conexão com o Drive do filho.');
+        // Se o GSI client já foi inicializado, pede o token.
         if (tokenClientRef.current) {
-          // Solicita o token de acesso em nome do iframe
-          tokenClientRef.current.requestAccessToken();
-        } else {
-          console.error('Google Token Client não inicializado.');
+            console.log('Filho pronto e GSI já carregado, solicitando token...');
+            tokenClientRef.current.requestAccessToken();
         }
       } else if (type === 'ECOFEIRA_RESTORE_DATA') {
         console.log('Dados de restauração recebidos:', payload);
@@ -100,7 +102,7 @@ export default function BackupPage() {
     return () => {
       window.removeEventListener('message', handleMessage);
     };
-  }, [handleTokenResponse]);
+  }, []);
 
   // Efeito para enviar os dados iniciais assim que o filho estiver pronto
   useEffect(() => {
@@ -120,7 +122,7 @@ export default function BackupPage() {
         <CardHeader>
           <CardTitle className="text-2xl">Gerenciamento de Backup</CardTitle>
           <CardDescription>
-            Use o painel abaixo para salvar ou restaurar os dados da sua conta EcoFeira no seu Google Drive pessoal.
+            A sincronização com o Google Drive está sendo iniciada automaticamente para sua conta EcoFeira.
           </CardDescription>
         </CardHeader>
         <CardContent>
