@@ -1,9 +1,10 @@
+
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, ShieldCheck, ShieldX, CheckCircle2 } from 'lucide-react';
+import { Loader2, ShieldCheck, CheckCircle2 } from 'lucide-react';
 
 // Tipos para os dados recebidos do site pai
 interface EcoFeiraUser {
@@ -70,13 +71,19 @@ export default function Home() {
         const searchResponse = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and 'appDataFolder' in parents and trashed=false&spaces=appDataFolder&fields=files(id)`, {
             headers: { 'Authorization': `Bearer ${accessTokenRef.current}` }
         });
+
+        if (!searchResponse.ok) {
+          const errorBody = await searchResponse.json();
+          throw new Error(errorBody.error.message || 'Falha ao buscar arquivo no Drive.');
+        }
+
         const searchResult = await searchResponse.json();
-        if (searchResult.error) throw searchResult.error;
         
         const files = searchResult.files;
         const blob = new Blob([fileContent], {type: 'application/json'});
         let uploadUrl: string;
         let method: 'POST' | 'PATCH';
+        let headers: HeadersInit = { 'Authorization': `Bearer ${accessTokenRef.current}` };
         let body: any;
 
         if (files && files.length > 0) {
@@ -84,6 +91,7 @@ export default function Home() {
             uploadUrl = `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`;
             method = 'PATCH';
             body = blob;
+            headers['Content-Type'] = 'application/json';
         } else {
             uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
             method = 'POST';
@@ -91,16 +99,19 @@ export default function Home() {
             formData.append('metadata', new Blob([JSON.stringify(fileMetadata)], { type: 'application/json' }));
             formData.append('file', blob);
             body = formData;
+            // No Content-Type header para multipart/form-data, o browser define
         }
         
         const uploadResponse = await fetch(uploadUrl, {
             method: method,
-            headers: { 'Authorization': `Bearer ${accessTokenRef.current}` },
+            headers: headers,
             body: body,
         });
 
-        const uploadResult = await uploadResponse.json();
-        if (uploadResult.error) throw uploadResult.error;
+        if (!uploadResponse.ok) {
+            const errorBody = await uploadResponse.json();
+            throw new Error(errorBody.error.message || 'Falha ao salvar o arquivo no Drive.');
+        }
 
         setLastBackupStatus('saved');
 
@@ -132,7 +143,6 @@ export default function Home() {
       if (type === 'ECOFEIRA_BACKUP_INIT') {
         setAppUser(user);
         
-        // Se houver dados novos, aciona o backup (respeitando o throttle)
         if(data && accessTokenRef.current && !isThrottled.current) {
           handleBackup(data);
         }
@@ -160,8 +170,10 @@ export default function Home() {
 
     window.addEventListener('message', handleMessage);
     
-    // Avisa o pai que está pronto para receber dados e iniciar a conexão.
-    window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, '*');
+    // Avisa o pai que está pronto. Não pede mais a conexão.
+    if(window.parent) {
+      window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, '*');
+    }
     
     return () => {
       window.removeEventListener('message', handleMessage);
@@ -176,7 +188,7 @@ export default function Home() {
         <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card rounded-lg border border-border">
           <Loader2 className="h-12 w-12 text-muted-foreground animate-spin" />
           <p className="font-semibold">Conectando ao Google Drive...</p>
-          <p className="text-sm text-muted-foreground">Por favor, autorize o acesso na janela principal.</p>
+          <p className="text-sm text-muted-foreground">Aguardando autorização do EcoFeira.</p>
         </div>
       );
     }
@@ -220,3 +232,4 @@ export default function Home() {
     </main>
   );
 }
+
