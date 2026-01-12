@@ -1,11 +1,9 @@
-
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, ShieldCheck, ShieldX, UploadCloud, DownloadCloud, CheckCircle2 } from 'lucide-react';
+import { Loader2, ShieldCheck, ShieldX, CheckCircle2 } from 'lucide-react';
 
 // Tipos para os dados recebidos do site pai
 interface EcoFeiraUser {
@@ -30,12 +28,9 @@ const GoogleDriveIcon = (props: React.SVGProps<SVGSVGElement>) => (
     </svg>
 );
 
-
 export default function Home() {
-  const [parentData, setParentData] = useState<EcoFeiraData | null>(null);
   const [appUser, setAppUser] = useState<EcoFeiraUser | null>(null);
   const [isDriveConnected, setIsDriveConnected] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
   const [lastBackupStatus, setLastBackupStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   
   const { toast } = useToast();
@@ -122,7 +117,6 @@ export default function Home() {
     }
   }, [appUser, toast]);
 
-
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (!ALLOWED_PARENT_ORIGINS.includes(event.origin)) {
@@ -139,7 +133,7 @@ export default function Home() {
         setAppUser(user);
         
         // Se houver dados novos, aciona o backup (respeitando o throttle)
-        if(data && !isThrottled.current) {
+        if(data && accessTokenRef.current && !isThrottled.current) {
           handleBackup(data);
         }
       }
@@ -147,7 +141,6 @@ export default function Home() {
       if (type === 'DRIVE_TOKEN_RESPONSE' && token) {
          accessTokenRef.current = token;
          setIsDriveConnected(true);
-         setIsConnecting(false);
          toast({
            title: 'Google Drive Conectado!',
            description: 'A sincronização automática está ativa.',
@@ -157,7 +150,6 @@ export default function Home() {
 
       if (type === 'DRIVE_TOKEN_ERROR') {
           console.error('Erro de autenticação do Drive recebido do pai:', error);
-          setIsConnecting(false);
           toast({
               title: 'Erro de conexão',
               description: 'Não foi possível conectar ao Google Drive.',
@@ -168,6 +160,7 @@ export default function Home() {
 
     window.addEventListener('message', handleMessage);
     
+    // Avisa o pai que está pronto para receber dados e iniciar a conexão.
     window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, '*');
     
     return () => {
@@ -177,26 +170,13 @@ export default function Home() {
   }, [handleBackup, toast]);
 
 
-  const handleDriveConnect = () => {
-    setIsConnecting(true);
-    if (parentOriginRef.current) {
-      window.parent.postMessage({ type: 'DRIVE_CONNECT_REQUEST' }, parentOriginRef.current);
-    } else {
-      console.error("Origem do pai não definida, não é possível solicitar conexão.");
-      toast({ title: 'Erro de Comunicação', description: 'Não foi possível contatar o site principal.', variant: 'destructive' });
-      setIsConnecting(false);
-    }
-  };
-
   const renderStatus = () => {
     if (!isDriveConnected) {
       return (
         <div className="flex flex-col items-center justify-center gap-4 text-center p-6 bg-card rounded-lg border border-border">
-          <ShieldX className="h-12 w-12 text-muted-foreground" />
-          <p className="text-muted-foreground">Conecte seu Google Drive para ativar a sincronização automática.</p>
-          <Button onClick={handleDriveConnect} disabled={!appUser || isConnecting}>
-              {isConnecting ? <Loader2 className="animate-spin" /> : 'Conectar ao Google Drive'}
-          </Button>
+          <Loader2 className="h-12 w-12 text-muted-foreground animate-spin" />
+          <p className="font-semibold">Conectando ao Google Drive...</p>
+          <p className="text-sm text-muted-foreground">Por favor, autorize o acesso na janela principal.</p>
         </div>
       );
     }
@@ -240,5 +220,3 @@ export default function Home() {
     </main>
   );
 }
-
-    
