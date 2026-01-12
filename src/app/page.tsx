@@ -38,6 +38,7 @@ export default function Home() {
   
   const accessTokenRef = useRef<string | null>(null);
   const parentOriginRef = useRef<string | null>(null);
+  const appDataRef = useRef<EcoFeiraData | null>(null);
 
   // Refs para a lógica de throttling
   const isThrottled = useRef(false);
@@ -48,14 +49,18 @@ export default function Home() {
     'https://ecofeiraintv3.vercel.app',
   ];
 
-  const handleBackup = useCallback(async (dataToBackup: EcoFeiraData) => {
-    if (!appUser || !accessTokenRef.current) {
+  const handleBackup = useCallback(async () => {
+    // Agora verifica appDataRef.current em vez de um parâmetro
+    const dataToBackup = appDataRef.current;
+    
+    if (!appUser || !accessTokenRef.current || !dataToBackup) {
         setLastBackupStatus('error');
-        console.error('Backup não pode ser realizado: Dados ou conexão com o Drive não encontrados.');
+        console.error('Backup não pode ser realizado: Dados do usuário, dados do app ou conexão com o Drive não encontrados.');
         return;
     }
     
-    // Inicia o throttling
+    if (isThrottled.current) return;
+
     isThrottled.current = true;
     setLastBackupStatus('saving');
 
@@ -99,7 +104,6 @@ export default function Home() {
             formData.append('metadata', new Blob([JSON.stringify(fileMetadata)], { type: 'application/json' }));
             formData.append('file', blob);
             body = formData;
-            // No Content-Type header para multipart/form-data, o browser define
         }
         
         const uploadResponse = await fetch(uploadUrl, {
@@ -120,7 +124,6 @@ export default function Home() {
         setLastBackupStatus('error');
         toast({ title: 'Erro na Sincronização', description: err.message || 'Não foi possível salvar os dados no Drive.', variant: 'destructive'});
     } finally {
-        // Libera o throttle após 20 segundos
         if (throttleTimeoutRef.current) clearTimeout(throttleTimeoutRef.current);
         throttleTimeoutRef.current = setTimeout(() => {
             isThrottled.current = false;
@@ -142,9 +145,11 @@ export default function Home() {
 
       if (type === 'ECOFEIRA_BACKUP_INIT') {
         setAppUser(user);
-        
-        if(data && accessTokenRef.current && !isThrottled.current) {
-          handleBackup(data);
+        appDataRef.current = data; // Armazena os dados recebidos na ref
+
+        // Se já temos o token, podemos tentar o backup
+        if(accessTokenRef.current) {
+          handleBackup();
         }
       }
 
@@ -156,6 +161,11 @@ export default function Home() {
            description: 'A sincronização automática está ativa.',
            variant: 'success'
          });
+
+         // Se já temos os dados, podemos tentar o backup
+         if(appDataRef.current) {
+           handleBackup();
+         }
       }
 
       if (type === 'DRIVE_TOKEN_ERROR') {
@@ -170,7 +180,6 @@ export default function Home() {
 
     window.addEventListener('message', handleMessage);
     
-    // Avisa o pai que está pronto. Não pede mais a conexão.
     if(window.parent) {
       window.parent.postMessage({ type: 'ECOFEIRA_BACKUP_READY' }, '*');
     }
@@ -232,4 +241,3 @@ export default function Home() {
     </main>
   );
 }
-
